@@ -36,3 +36,11 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+
+# Prisma generated client
+packages/database/src/generated/
+packages/database/prisma/src/generated/
+
+# Yarn state
+.yarn/install-state.gz
+.yarn/cache

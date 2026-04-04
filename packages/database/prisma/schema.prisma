@@ -1,8 +1,115 @@
 generator client {
-  provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  VIEWER
+  ANALYST
+  ADMIN
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+}
+
+enum RecordType {
+  INCOME
+  EXPENSE
+}
+
+enum Action {
+  CREATED
+  UPDATED
+  DELETED
+  RESTORED
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id               String            @id @default(uuid())
+  name             String
+  email            String            @unique
+  googleId         String?           @unique
+  mobileNo         String?           @unique
+  role             Role              @default(VIEWER)
+  status           Status            @default(ACTIVE)
+
+  // OTP auth
+  isVerified       Boolean           @default(false)
+  otpHash          String?
+  otpExpiry        DateTime?
+  otpAttempts      Int               @default(0)
+
+  // token auth
+  refreshTokenHash String?
+  refreshExpiresAt DateTime?
+
+  records          FinancialRecord[]
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+model Category {
+  id          String            @id @default(uuid())
+  name        String            @unique
+  description String?
+  createdAt   DateTime          @default(now())
+
+  records     FinancialRecord[]
+
+  @@map("categories")
+}
+
+model FinancialRecord {
+  id         String     @id @default(uuid())
+  amount     Decimal    @db.Decimal(12, 2)
+  type       RecordType
+  notes      String?
+  date       DateTime
+  isDeleted  Boolean    @default(false)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  categoryId String
+  category   Category   @relation(fields: [categoryId], references: [id])
+
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+
+  auditLogs  AuditLog[]
+
+  @@index([type])
+  @@index([date])
+  @@index([categoryId])
+  @@index([userId])
+  @@index([isDeleted])
+  @@map("financial_records")
+}
+
+model AuditLog {
+  id        String          @id @default(uuid())
+  action    Action
+  snapshot  Json
+  createdAt DateTime        @default(now())
+
+  userId    String
+  user      User            @relation(fields: [userId], references: [id])
+
+  recordId  String?
+  record    FinancialRecord? @relation(fields: [recordId], references: [id])
+
+  @@index([userId])
+  @@index([recordId])
+  @@map("audit_logs")
 }

@@ -9,6 +9,7 @@ export function getRedisClient(): Redis {
   const { url } = getRedisConfig();
 
   client = new Redis(url, {
+    maxRetriesPerRequest: null,
     lazyConnect: true,
     retryStrategy(times) {
       if (times > 5) {

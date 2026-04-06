@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import * as SibApiV3Sdk from 'sib-api-v3-sdk';
 

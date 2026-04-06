@@ -6,22 +6,17 @@ let client: Redis | null = null;
 export function getRedisClient(): Redis {
   if (client) return client;
 
-  const config = getRedisConfig();
+  const { url } = getRedisConfig();
 
-  client = new Redis({
-    host: config.host,
-    port: config.port,
-    password: config.password,
-    db: config.db,
-    tls: config.tls ? {} : undefined,
+  client = new Redis(url, {
     lazyConnect: true,
     retryStrategy(times) {
       if (times > 5) {
         console.error("[Redis] Max retry attempts reached. Giving up.");
-        return null; // stop retrying
+        return null;
       }
       const delay = Math.min(times * 200, 2000);
-      console.warn(`[Redis] Retrying connection in ${delay}ms... (attempt ${times})`);
+      console.warn(`[Redis] Retrying in ${delay}ms... (attempt ${times})`);
       return delay;
     },
     reconnectOnError(err) {

@@ -1,159 +1,420 @@
-# Turborepo starter
+# Finance Dashboard — Backend
 
-This Turborepo starter is maintained by the Turborepo core team.
+A role-based finance dashboard backend built with NestJS, Prisma, BullMQ, and Redis inside a Turborepo monorepo.
 
-## Using this example
+---
 
-Run the following command:
+## Table of Contents
 
-```sh
-npx create-turbo@latest
+- [Project Structure](#project-structure)
+- [Architecture Overview](#architecture-overview)
+- [Packages](#packages)
+- [Apps](#apps)
+- [Modules](#modules)
+- [Auth Flow](#auth-flow)
+- [Role Based Access](#role-based-access)
+- [Queue & Audit Logging](#queue--audit-logging)
+- [Idempotency](#idempotency)
+- [Rate Limiting](#rate-limiting)
+- [API Reference](#api-reference)
+- [Environment Variables](#environment-variables)
+- [Getting Started](#getting-started)
+
+---
+
+## Project Structure
+
+```
+internship/
+├── apps/
+│   └── api/                        # NestJS backend
+│       └── src/
+│           ├── modules/
+│           │   ├── auth/           # Authentication module
+│           │   ├── dashboard/      # Dashboard summary module
+│           │   └── financial-records/ # Records + categories module
+│           ├── common/             # Shared middleware and configs
+│           ├── app.module.ts       # Root module
+│           └── main.ts             # Entry point
+├── packages/
+│   ├── database/                   # Prisma client (@repo/database)
+│   └── queue/                      # Redis client (@repo/queue)
+└── package.json                    # Monorepo root
 ```
 
-## What's inside?
+---
 
-This Turborepo includes the following packages/apps:
+## Architecture Overview
 
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```
+Client
+  │
+  ▼
+NestJS API (apps/api)
+  │
+  ├── Auth Module         → Google OAuth + OTP + JWT
+  ├── Dashboard Module    → Summary, trends, category breakdown
+  └── Financial Records   → CRUD + role guard + audit queue
+          │
+          ├── Postgres (via @repo/database / Prisma)
+          └── Redis + BullMQ (via @repo/queue)
+                  │
+                  └── Audit Worker → writes AuditLog to Postgres
 ```
 
-Without global `turbo`, use your package manager:
+---
 
-```sh
-cd my-turborepo
-npx turbo build
-yarn dlx turbo build
-pnpm exec turbo build
+## Packages
+
+### `packages/database` → `@repo/database`
+
+Shared Prisma client used across all apps. Import the `prisma` instance directly — no `PrismaService` injection needed.
+
+```typescript
+import { prisma } from "@repo/database";
+
+await prisma.user.findUnique({ where: { id } });
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+**Schema models**: `User`, `FinancialRecord`, `Category`, `AuditLog`, `IdempotencyKey`
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+---
 
-```sh
-turbo build --filter=docs
+### `packages/queue` → `@repo/queue`
+
+Shared Redis client powered by `ioredis`. Connects via `REDIS_URL`. Exports:
+
+| Export              | Description                      |
+| ------------------- | -------------------------------- |
+| `getRedisClient()`  | Returns singleton Redis instance |
+| `connectRedis()`    | Explicitly connects the client   |
+| `disconnectRedis()` | Gracefully disconnects           |
+
+```typescript
+import { getRedisClient } from "@repo/queue";
 ```
 
-Without global `turbo`:
+> Build required before use: `cd packages/queue && yarn build`
 
-```sh
-npx turbo build --filter=docs
-yarn exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+---
+
+## Apps
+
+### `apps/api`
+
+The main NestJS backend. Runs on `PORT` from `.env` (default `3000`).
+
+```
+src/
+├── modules/
+│   ├── auth/
+│   │   ├── services/
+│   │   │   └── otp.service.ts         # OTP generation + hashing
+│   │   ├── auth.service.ts            # Core auth logic
+│   │   ├── auth.controller.ts         # Auth routes
+│   │   ├── auth.module.ts
+│   │   ├── google.strategy.ts         # Passport Google OAuth strategy
+│   │   ├── google.guard.ts            # Google auth guard
+│   │   ├── jwt.strategy.ts            # Passport JWT strategy
+│   │   ├── jwt.guard.ts               # JWT auth guard
+│   │   ├── roles.guard.ts             # Role based access guard
+│   │   └── roles.decorator.ts         # @Roles() decorator
+│   │
+│   ├── dashboard/
+│   │   ├── dashboard.service.ts       # Aggregation logic
+│   │   ├── dashboard.controller.ts    # Dashboard routes
+│   │   └── dashboard.module.ts
+│   │
+│   └── financial-records/
+│       ├── dto/
+│       │   ├── create-record.dto.ts
+│       │   ├── update-record.dto.ts
+│       │   └── filter-records.dto.ts
+│       ├── services/
+│       │   ├── financial-records.service.ts  # CRUD logic
+│       │   ├── categories.service.ts         # Category management
+│       │   ├── audit.queue.ts                # BullMQ queue instance
+│       │   └── audit.worker.ts               # BullMQ worker
+│       ├── financial-records.controller.ts
+│       └── financial-records.module.ts
+│
+├── common/
+│   ├── idempotency.middleware.ts      # Idempotency key middleware
+│   └── throttler.config.ts           # Rate limiting config
+│
+├── app.module.ts                      # Root module — registers all modules + global guards
+└── main.ts                            # Bootstrap + global pipes + CORS
 ```
 
-### Develop
+---
 
-To develop all apps and packages, run the following command:
+## Modules
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+### Auth Module
 
-```sh
-cd my-turborepo
-turbo dev
+Handles Google OAuth login, OTP verification, and JWT access/refresh token lifecycle.
+
+| File                 | Responsibility                                                  |
+| -------------------- | --------------------------------------------------------------- |
+| `google.strategy.ts` | Extracts name + email from Google profile                       |
+| `google.guard.ts`    | Passes `role` via OAuth state param                             |
+| `jwt.strategy.ts`    | Validates Bearer token, checks `tokenType: 'access'`            |
+| `jwt.guard.ts`       | Protects routes requiring authentication                        |
+| `roles.guard.ts`     | Checks `user.role` against `@Roles()` metadata                  |
+| `roles.decorator.ts` | Attaches allowed roles metadata to route handlers               |
+| `auth.service.ts`    | Upserts user on Google login, issues temp/access/refresh tokens |
+| `otp.service.ts`     | Generates 6-digit OTP, bcrypt hashes it, sets 5min expiry       |
+
+---
+
+### Dashboard Module
+
+All routes are JWT protected. Data is scoped to the requesting user via `req.user.sub`.
+
+| File                      | Responsibility                                                             |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `dashboard.service.ts`    | Summary totals, category breakdown, recent activity, monthly/weekly trends |
+| `dashboard.controller.ts` | Exposes dashboard endpoints                                                |
+
+---
+
+### Financial Records Module
+
+Full CRUD with soft delete, restore, filtering, category management, and async audit logging via BullMQ.
+
+| File                           | Responsibility                                                    |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `financial-records.service.ts` | CRUD + role scoping + fires audit queue jobs                      |
+| `categories.service.ts`        | Create, list, delete categories                                   |
+| `audit.queue.ts`               | BullMQ Queue instance connected via `@repo/queue` Redis client    |
+| `audit.worker.ts`              | BullMQ Worker — writes `AuditLog` rows to Postgres asynchronously |
+| DTOs                           | Input validation via `class-validator`                            |
+
+---
+
+## Auth Flow
+
+```
+1. GET /auth/google?role=ADMIN
+       │
+       ▼
+2. Google OAuth callback → upsert user → generate OTP → send OTP email
+       │
+       ▼
+3. POST /auth/verify-otp { token, otp }
+       │
+       ├── validates temp JWT
+       ├── compares OTP hash
+       ├── issues accessToken (60m) + refreshToken (30d)
+       └── sets refreshToken as httpOnly cookie on /auth/refresh
+       │
+       ▼
+4. POST /auth/refresh (cookie: refreshToken)
+       │
+       ├── verifies refresh JWT
+       ├── compares stored hash
+       └── returns new accessToken
 ```
 
-Without global `turbo`, use your package manager:
+---
 
-```sh
-cd my-turborepo
-npx turbo dev
-yarn exec turbo dev
-pnpm exec turbo dev
+## Role Based Access
+
+| Role      | Description                                                              |
+| --------- | ------------------------------------------------------------------------ |
+| `VIEWER`  | Read-only access to records and dashboard                                |
+| `ANALYST` | Read + create + update records                                           |
+| `ADMIN`   | Full access — delete, restore, manage categories, see all users' records |
+
+Guards applied: `JwtAuthGuard` (authentication) + `RolesGuard` (authorization).
+
+```typescript
+@Roles(Role.ADMIN, Role.ANALYST)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Post()
+create() {}
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+---
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+## Queue & Audit Logging
 
-```sh
-turbo dev --filter=web
+Every mutation on a `FinancialRecord` (create, update, delete, restore) fires a non-blocking BullMQ job:
+
+```
+financialRecords.service → auditQueue.add() → [non-blocking, returns to user]
+                                    │
+                                    ▼
+                            auditWorker picks up job
+                                    │
+                                    ▼
+                            prisma.auditLog.create()
 ```
 
-Without global `turbo`:
+The `snapshot` field stores the full record state at time of action — giving a complete, diffable history.
 
-```sh
-npx turbo dev --filter=web
-yarn exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
+---
+
+## Idempotency
+
+All mutating routes (`POST`, `PATCH`, `DELETE`) support idempotency via the `Idempotency-Key` header.
+
+```
+Client sends: Idempotency-Key: <uuid>
+
+First request  → executes normally, caches response for 24hrs
+Second request → returns cached response immediately, no re-execution
 ```
 
-### Remote Caching
+Implemented as a global middleware in `common/idempotency.middleware.ts`. Keys are stored in the `IdempotencyKey` Prisma model.
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+---
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
+## Rate Limiting
 
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
+Applied globally via `@nestjs/throttler`:
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+| Window   | Limit        |
+| -------- | ------------ |
+| 1 second | 5 requests   |
+| 1 minute | 100 requests |
 
-```sh
-cd my-turborepo
-turbo login
+Configured in `common/throttler.config.ts` and registered in `app.module.ts` via `APP_GUARD`.
+
+---
+
+## API Reference
+
+### Auth
+
+| Method | Route                     | Description            | Auth     |
+| ------ | ------------------------- | ---------------------- | -------- |
+| GET    | `/auth/google?role=ADMIN` | Initiate Google OAuth  | None     |
+| GET    | `/auth/google/callback`   | OAuth callback         | None     |
+| POST   | `/auth/verify-otp`        | Verify OTP, get tokens | Temp JWT |
+| POST   | `/auth/refresh`           | Refresh access token   | Cookie   |
+
+### Dashboard
+
+All routes require `Authorization: Bearer <accessToken>`
+
+| Method | Route                       | Description                         |
+| ------ | --------------------------- | ----------------------------------- |
+| GET    | `/dashboard/summary`        | Total income, expenses, net balance |
+| GET    | `/dashboard/categories`     | Per-category breakdown              |
+| GET    | `/dashboard/recent`         | Last 10 transactions                |
+| GET    | `/dashboard/trends/monthly` | Month-wise income vs expense        |
+| GET    | `/dashboard/trends/weekly`  | Last 7 days daily breakdown         |
+
+### Financial Records
+
+| Method | Route                               | VIEWER | ANALYST | ADMIN |
+| ------ | ----------------------------------- | ------ | ------- | ----- |
+| GET    | `/financial-records`                | ✅     | ✅      | ✅    |
+| GET    | `/financial-records/:id`            | ✅     | ✅      | ✅    |
+| POST   | `/financial-records`                | ❌     | ✅      | ✅    |
+| PATCH  | `/financial-records/:id`            | ❌     | ✅      | ✅    |
+| DELETE | `/financial-records/:id`            | ❌     | ❌      | ✅    |
+| PATCH  | `/financial-records/:id/restore`    | ❌     | ❌      | ✅    |
+| GET    | `/financial-records/categories`     | ✅     | ✅      | ✅    |
+| POST   | `/financial-records/categories`     | ❌     | ❌      | ✅    |
+| DELETE | `/financial-records/categories/:id` | ❌     | ❌      | ✅    |
+
+**Query filters for `GET /financial-records`:**
+
+| Param        | Type                  | Description           |
+| ------------ | --------------------- | --------------------- |
+| `type`       | `INCOME` \| `EXPENSE` | Filter by record type |
+| `categoryId` | `string`              | Filter by category    |
+| `from`       | `ISO date string`     | Date range start      |
+| `to`         | `ISO date string`     | Date range end        |
+
+---
+
+## Environment Variables
+
+```env
+# Database
+DATABASE_URL=your_database_url
+
+# Redis
+REDIS_URL=your_redis_url
+
+# JWT
+JWT_ACCESS_SECRET=your_access_secret
+JWT_REFRESH_SECRET=your_refresh_secret
+
+# Google OAuth
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GOOGLE_CALLBACK_URL=http://localhost:3000/auth/google/callback
+
+# App
+PORT=3000
 ```
 
-Without global `turbo`, use your package manager:
+---
 
-```sh
-cd my-turborepo
-npx turbo login
-yarn exec turbo login
-pnpm exec turbo login
+## Getting Started
+
+### Prerequisites
+
+- Node.js 18+
+- PostgreSQL
+- Redis (or Docker)
+
+### 1. Clone and install
+
+```bash
+git clone <repo-url>
+cd internship
+yarn
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+### 2. Start Redis
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
+```bash
+docker run -d -p 6379:6379 redis
 ```
 
-Without global `turbo`:
+### 3. Set up environment
 
-```sh
-npx turbo link
-yarn exec turbo link
-pnpm exec turbo link
+```bash
+cp apps/api/.env.example apps/api/.env
+# fill in the values
 ```
 
-## Useful Links
+### 4. Build shared packages
 
-Learn more about the power of Turborepo:
+```bash
+cd packages/database && yarn build
+cd ../queue && yarn build
+cd ../..
+```
 
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+### 5. Run migrations
+
+```bash
+cd packages/database
+npx prisma migrate dev
+```
+
+### 6. Start the API
+
+```bash
+cd apps/api
+yarn start:dev
+```
+
+API runs at `http://localhost:3000`
+
+---
+
+## Assumptions
+
+- Google OAuth is the only login method — no email/password auth
+- Roles are assigned at registration time via the `role` query param on the OAuth flow
+- Soft deleted records are excluded from all dashboard aggregations
+- ADMIN sees all users' records; VIEWER and ANALYST only see their own
+- Idempotency keys expire after 24 hours
+- Audit log snapshots store the full record state — no diffing required to reconstruct history

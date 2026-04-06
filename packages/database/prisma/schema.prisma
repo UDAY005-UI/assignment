@@ -113,3 +113,14 @@ model AuditLog {
   @@index([recordId])
   @@map("audit_logs")
 }
+
+model IdempotencyKey {
+  id         String   @id @default(uuid())
+  key        String   @unique
+  response   Json
+  statusCode Int
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@map("idempotency_keys")
+}
